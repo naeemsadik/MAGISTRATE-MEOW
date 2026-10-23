@@ -75,7 +75,7 @@ class LockdownModule : Module() {
       appContext.currentActivity?.let { activity ->
         try {
           if (lockTaskState() != STATE_NONE) activity.stopLockTask()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
           // Not in lock task mode, or pinned by another task — nothing to undo.
         }
       }

@@ -1,0 +1,91 @@
+# Builds the release APK on GitHub's runners (JDK + Android SDK preinstalled) and publishes it
+# as a GitHub Release, so no local Android Studio is needed.
+# Latest APK: https://github.com/<owner>/<repo>/releases/latest/download/MagistrateMeow.apk
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash # implies -eo pipefail, so `| tee` doesn't hide Gradle failures
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate native Android project
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Build release APK
+        working-directory: android
+        # 32-bit ARM is kept for Android Go phones; x86 ABIs (emulators only) are skipped to halve build time.
+        run: |
+          ./gradlew assembleRelease \
+            -PreactNativeArchitectures=arm64-v8a,armeabi-v7a \
+            -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g" \
+            --no-daemon --stacktrace 2>&1 | tee ../gradle-build.log
+
+      - name: Surface build errors
+        if: failure()
+        run: |
+          if [ -f gradle-build.log ]; then
+            msg=$(grep -E -A4 "^e: |error:|What went wrong|Execution failed|Could not resolve" gradle-build.log | head -80 \
+              | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+            echo "::error title=Gradle build failed::${msg}"
+          fi
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/app-release.apk out/MagistrateMeow.apk
+          ls -lh out
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: MagistrateMeow-apk
+          path: out/MagistrateMeow.apk
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: build-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: Magistrate Meow (build ${{ github.run_number }})
+          make_latest: 'true'
+          files: out/MagistrateMeow.apk
+          body: |
+            Android APK built from ${{ github.sha }}.
+
+            **Install:** download `MagistrateMeow.apk` on the phone, open it, and allow "Install unknown apps" for your browser/file manager when Android asks.
+            Signed with the default debug key, so later builds from this workflow install over it as updates.
